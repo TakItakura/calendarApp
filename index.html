@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>祝日 +4週/+8週 ハイライト</title>
+  <link rel="manifest" href="./manifest.webmanifest">
+  <meta name="theme-color" content="#ffffff">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+
+  <!-- FullCalendar -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.js"></script>
+
+  <style>
+    body { font-family: system-ui, -apple-system, "Hiragino Kaku Gothic ProN", Meiryo, sans-serif; margin: 16px; }
+    .bar { display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }
+    .bar label { display:flex; gap:6px; align-items:center; }
+    #calendar { max-width: 1100px; margin: 0 auto; }
+    .note { max-width: 1100px; margin: 10px auto 0; color:#555; font-size: 13px; }
+    .pill { display:inline-block; padding:2px 8px; border-radius:999px; margin-right:6px; font-size:12px; }
+    .p-h { background:#ffebe9; border:1px solid #ffb4ad; }
+    .p-4 { background:#e8f0fe; border:1px solid #a8c7fa; }
+    .p-8 { background:#e6f4ea; border:1px solid #a8dab5; }
+  </style>
+</head>
+<body>
+  <div class="bar">
+    <label><input id="toggleHoliday" type="checkbox" checked>祝日を表示</label>
+    <label><input id="togglePlus4" type="checkbox" checked>4週間後（+28日）を表示</label>
+    <label><input id="togglePlus8" type="checkbox" checked>8週間後（+56日）を表示</label>
+    <button id="reload">再読み込み</button>
+  </div>
+
+  <div class="note">
+    <span class="pill p-h">祝日</span>
+    <span class="pill p-4">+4週</span>
+    <span class="pill p-8">+8週</span>
+    <div style="margin-top:6px;">
+      祝日データは Holidays JP API（JSON）から取得します。取得に失敗したら、ネット接続を確認してください。
+    </div>
+  </div>
+
+  <div id="calendar"></div>
+
+  <script>
+    // ---- 設定 ----
+    const HOLIDAY_API = "https://holidays-jp.github.io/api/v1/date.json"; // 祝日一覧（date -> name）  [oai_citation:2‡Holidays JP API](https://holidays-jp.github.io/?utm_source=chatgpt.com)
+    const TZ = "Asia/Tokyo";
+
+    // ---- 日付ユーティリティ ----
+    const pad2 = (n) => String(n).padStart(2, "0");
+    const toYMD = (d) => `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
+
+    // 「YYYY-MM-DD」をローカル日付として扱う（FullCalendarはallDayなら日付扱いが安定）
+    const parseYMD = (ymd) => {
+      const [y,m,dd] = ymd.split("-").map(Number);
+      return new Date(y, m-1, dd);
+    };
+
+    const addDays = (date, days) => {
+      const d = new Date(date.getTime());
+      d.setDate(d.getDate() + days);
+      return d;
+    };
+
+    // ---- 祝日取得 ----
+    async function fetchHolidays() {
+      const res = await fetch(HOLIDAY_API, { cache: "no-store" });
+      if (!res.ok) throw new Error("祝日API取得失敗: " + res.status);
+      return await res.json(); // { "2017-01-01": "元日", ... }
+    }
+
+    // ---- イベント生成 ----
+    function buildEvents(holidayMap, opts) {
+      const events = [];
+
+      const showHoliday = opts.showHoliday;
+      const showPlus4 = opts.showPlus4;
+      const showPlus8 = opts.showPlus8;
+
+      // 表示対象：今年〜来年を中心に（大量になりすぎないようにフィルタ）
+      const now = new Date();
+      const from = new Date(now.getFullYear() - 1, 0, 1);
+      const to   = new Date(now.getFullYear() + 2, 11, 31);
+
+      // --- 年末年始（12/28〜1/3）を「休日」として毎年追加 ---
+      // 対象年：from〜to の範囲をカバーするために余裕を持って年を回す
+      const startYear = from.getFullYear();
+      const endYear = to.getFullYear();
+
+      for (let y = startYear; y <= endYear; y++) {
+        // 12/28〜12/31（y年）
+        for (let d = 28; d <= 31; d++) {
+          const ymd = `${y}-12-${pad2(d)}`;
+          // 既に祝日APIに同日がある場合は上書きしない（重複回避）
+          if (!holidayMap[ymd]) holidayMap[ymd] = "年末年始";
+        }
+        // 1/1〜1/3（y年）
+        for (let d = 1; d <= 3; d++) {
+          const ymd = `${y}-01-${pad2(d)}`;
+          if (!holidayMap[ymd]) holidayMap[ymd] = "年末年始";
+        }
+      }
+
+      for (const [ymd, name] of Object.entries(holidayMap)) {
+        const d = parseYMD(ymd);
+        if (d < from || d > to) continue;
+
+        if (showHoliday) {
+          events.push({
+            title: name,
+            start: ymd,
+            allDay: true,
+            display: "background",
+            backgroundColor: "#ffebe9",
+            borderColor: "#ffb4ad",
+            extendedProps: { kind: "holiday", base: ymd }
+          });
+          // 表示用の小さなラベル（クリックでわかるように通常イベントも追加）
+          events.push({
+            title: "祝日: " + name,
+            start: ymd,
+            allDay: true,
+            backgroundColor: "#ffb4ad",
+            borderColor: "#ffb4ad",
+            textColor: "#000",
+            extendedProps: { kind: "holiday_label", base: ymd }
+          });
+        }
+
+        const d4 = addDays(d, 28);
+        const d8 = addDays(d, 56);
+
+        if (showPlus4) {
+          const ymd4 = toYMD(d4);
+          events.push({
+            title: `+4週 (${name})`,
+            start: ymd4,
+            allDay: true,
+            backgroundColor: "#a8c7fa",
+            borderColor: "#a8c7fa",
+            textColor: "#000",
+            extendedProps: { kind: "plus4", base: ymd, holidayName: name }
+          });
+        }
+
+        if (showPlus8) {
+          const ymd8 = toYMD(d8);
+          events.push({
+            title: `+8週 (${name})`,
+            start: ymd8,
+            allDay: true,
+            backgroundColor: "#a8dab5",
+            borderColor: "#a8dab5",
+            textColor: "#000",
+            extendedProps: { kind: "plus8", base: ymd, holidayName: name }
+          });
+        }
+      }
+
+      return events;
+    }
+
+    // ---- カレンダー初期化 ----
+    let calendar;
+
+    async function render() {
+      const showHoliday = document.querySelector("#toggleHoliday").checked;
+      const showPlus4 = document.querySelector("#togglePlus4").checked;
+      const showPlus8 = document.querySelector("#togglePlus8").checked;
+
+      const holidayMap = await fetchHolidays();
+      const events = buildEvents(holidayMap, { showHoliday, showPlus4, showPlus8 });
+
+      const el = document.getElementById("calendar");
+      if (calendar) calendar.destroy();
+
+      calendar = new FullCalendar.Calendar(el, {
+        timeZone: TZ,
+        initialView: "dayGridMonth",
+        locale: "ja",
+        height: "auto",
+        firstDay: 1, // 月曜始まり
+        headerToolbar: {
+          left: "prev,next today",
+          center: "title",
+          right: "dayGridMonth,dayGridWeek,listMonth"
+        },
+        events,
+        eventClick: function(info) {
+          const p = info.event.extendedProps || {};
+          if (p.kind === "plus4" || p.kind === "plus8") {
+            alert(`${info.event.title}\n元の祝日: ${p.holidayName}\n祝日の日付: ${p.base}\nこの日付: ${info.event.startStr}`);
+          } else if (p.kind === "holiday_label") {
+            alert(`${info.event.title}\n日付: ${info.event.startStr}`);
+          }
+        }
+      });
+
+      calendar.render();
+    }
+
+    // ---- UI ----
+    document.querySelector("#reload").addEventListener("click", () => {
+      render().catch(err => alert(err.message));
+    });
+    document.querySelector("#toggleHoliday").addEventListener("change", () => render().catch(err => alert(err.message)));
+    document.querySelector("#togglePlus4").addEventListener("change", () => render().catch(err => alert(err.message)));
+    document.querySelector("#togglePlus8").addEventListener("change", () => render().catch(err => alert(err.message)));
+
+    render().catch(err => alert(err.message));
+  </script>
+  <script>
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", async () => {
+      try {
+        await navigator.serviceWorker.register("./sw.js", { scope: "./" });
+      } catch (e) {
+        console.warn("Service Worker registration failed:", e);
+      }
+    });
+  }
+</script>
+</body>
+</html>
