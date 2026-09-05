@@ -4,6 +4,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>休日・休診日 +4週/+8週 ハイライト</title>
+  <link rel="icon" type="image/png" sizes="1254x1254" href="./favicon.png">
+  <link rel="apple-touch-icon" href="./favicon.png">
   <link rel="manifest" href="./manifest.webmanifest">
   <meta name="theme-color" content="#ffffff">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -14,8 +16,9 @@
 
   <style>
     body { font-family: system-ui, -apple-system, "Hiragino Kaku Gothic ProN", Meiryo, sans-serif; margin: 16px; }
-    .bar { display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }
-    .bar label { display:flex; gap:6px; align-items:center; }
+    .display-controls { max-width:1100px; margin:0 auto 12px; padding:10px 12px; box-sizing:border-box; display:flex; gap:8px; flex-wrap:wrap; align-items:center; border:1px solid #ddd; border-radius:10px; background:#f7f7f7; }
+    .display-controls label { display:inline-flex; gap:6px; align-items:center; padding:5px 9px; border:1px solid #ddd; border-radius:999px; background:#fff; white-space:nowrap; }
+    .display-controls #reload { margin-left:auto; }
     #calendar { max-width: 1100px; margin: 0 auto; touch-action:manipulation; }
     .note { max-width: 1100px; margin: 10px auto 0; color:#555; font-size: 13px; }
     .pill { display:inline-block; padding:2px 8px; border-radius:999px; margin-right:6px; font-size:12px; }
@@ -24,8 +27,11 @@
     .p-4 { background:#e8f0fe; border:1px solid #a8c7fa; }
     .p-8 { background:#e6f4ea; border:1px solid #a8dab5; }
     .p-m { background:#f0e7ff; border:1px solid #c6a8e8; }
-    .closure-panel { max-width:1100px; margin:0 auto 12px; padding:12px; box-sizing:border-box; border:1px solid #ddd; border-radius:8px; }
-    .closure-panel .bar { margin-bottom:6px; }
+    .closure-panel { max-width:1100px; margin:0 auto 12px; box-sizing:border-box; border:1px solid #ddd; border-radius:10px; overflow:hidden; }
+    .closure-panel summary { padding:11px 14px; cursor:pointer; font-weight:600; background:#f7f7f7; }
+    .closure-panel[open] summary { border-bottom:1px solid #ddd; }
+    .closure-panel-body { padding:12px 14px; }
+    .closure-actions { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
     .closure-panel p { margin:6px 0 0; font-size:13px; color:#555; }
     button, input[type="date"] { font:inherit; padding:6px 10px; }
     button { cursor:pointer; }
@@ -39,37 +45,47 @@
     #memoText { width:100%; min-height:180px; box-sizing:border-box; padding:10px; font:inherit; font-size:16px; line-height:1.6; resize:vertical; }
     #memoDialog p { font-size:13px; color:#555; }
     #memoDialog #memoStatus { color:#a12b21; }
-    .memo-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:16px; }
+    .memo-actions { display:grid; grid-template-columns:minmax(0, 1fr) auto auto; gap:10px; margin-top:16px; }
+    #exportObsidian { justify-self:start; }
     @media (max-width:600px) {
       body { margin:8px; }
+      .display-controls { padding:8px; }
+      .display-controls #reload { margin-left:0; }
+      .closure-actions { display:grid; grid-template-columns:1fr 1fr; }
+      #closureDate, #openMemo { grid-column:1 / -1; width:100%; box-sizing:border-box; }
+      #setClosure, #removeClosure, #openMemo { width:100%; }
       .fc .fc-header-toolbar { flex-wrap:wrap; gap:8px; }
       .fc .fc-toolbar-title { font-size:1.25em; }
+      .memo-actions { grid-template-columns:1fr 1fr; }
+      #exportObsidian { grid-column:1 / -1; justify-self:stretch; width:100%; }
+      #cancelMemo, #saveMemo { width:100%; }
     }
   </style>
 </head>
 <body>
-  <div class="bar">
-    <label><input id="toggleHoliday" type="checkbox" checked>祝日を表示</label>
-    <label><input id="toggleClosure" type="checkbox" checked>休診日を表示</label>
-    <label><input id="togglePlus4" type="checkbox" checked>4週間後（+28日）を表示</label>
-    <label><input id="togglePlus8" type="checkbox" checked>8週間後（+56日）を表示</label>
+  <div class="display-controls" aria-label="表示項目">
+    <label><input id="toggleHoliday" type="checkbox" checked>祝日</label>
+    <label><input id="toggleClosure" type="checkbox" checked>休診日</label>
+    <label><input id="togglePlus4" type="checkbox" checked>4週間後（+28日）</label>
+    <label><input id="togglePlus8" type="checkbox" checked>8週間後（+56日）</label>
     <button id="reload">再読み込み</button>
   </div>
 
-  <form id="closureForm" class="closure-panel">
-    <div class="bar">
-      <label for="closureDate">休診日にする日付
-        <input id="closureDate" type="date" min="0100-01-01" max="9998-12-31" required aria-describedby="closureHelp closureStatus">
-      </label>
-      <button id="setClosure" type="submit">休診に設定</button>
-      <button id="removeClosure" type="button" disabled>休診を解除</button>
-      <button id="openMemo" type="button">この日のメモ</button>
-    </div>
-    <p id="closureHelp">日付を選んで「休診に設定」を押してください。カレンダーの日付や「休診」ラベルをクリックしても選択できます。</p>
-    <p>休診日と、その4週後・8週後を表示します。設定はこの端末・ブラウザー内に保存されます。別の端末とは共有されず、ブラウザーのデータを消去すると設定も消えます。</p>
-    <p id="closureStatus" role="status"></p>
-    <p id="storageStatus" role="alert"></p>
-  </form>
+  <details class="closure-panel" open>
+    <summary>休診日にする日付</summary>
+    <form id="closureForm" class="closure-panel-body">
+      <div class="closure-actions">
+        <input id="closureDate" type="date" min="0100-01-01" max="9998-12-31" required aria-label="休診日にする日付" aria-describedby="closureHelp closureStatus">
+        <button id="setClosure" type="submit">休診に設定</button>
+        <button id="removeClosure" type="button" disabled>休診を解除</button>
+        <button id="openMemo" type="button">この日のメモ</button>
+      </div>
+      <p id="closureHelp">日付を選んで「休診に設定」を押してください。カレンダーの日付や「休診」ラベルをクリックしても選択できます。</p>
+      <p>休診日と、その4週後・8週後を表示します。設定はこの端末・ブラウザー内に保存されます。別の端末とは共有されず、ブラウザーのデータを消去すると設定も消えます。</p>
+      <p id="closureStatus" role="status"></p>
+      <p id="storageStatus" role="alert"></p>
+    </form>
+  </details>
 
   <div class="note">
     <span class="pill p-h">祝日</span>
@@ -77,7 +93,6 @@
     <span class="pill p-4">+4週</span>
     <span class="pill p-8">+8週</span>
     <span class="pill p-m">メモあり</span>
-    <p>日付の数字や余白をダブルタップ（PCではダブルクリック）すると、その日のメモを開きます。「メモあり」や「この日のメモ」からも開けます。</p>
     <div id="memoStorageStatus" role="alert"></div>
     <div id="memoNotice" role="status"></div>
     <div style="margin-top:6px;">
@@ -564,7 +579,10 @@
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", async () => {
       try {
-        await navigator.serviceWorker.register("./sw.js", { scope: "./" });
+        await navigator.serviceWorker.register("./sw.js", {
+          scope: "./",
+          updateViaCache: "none"
+        });
       } catch (e) {
         console.warn("Service Worker registration failed:", e);
       }
