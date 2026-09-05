@@ -120,3 +120,52 @@ test('saving detects a same-date change from another tab and preserves the draft
   assert.match(app.node('#memoStatus').textContent, /別の画面/);
   assert.equal(app.storage.memoValue, '{"2026-09-07":"別タブの編集"}');
 });
+
+test('Obsidian export creates an encoded Markdown note without overwrite flags', () => {
+  const app = makeApp();
+  const uri = app.obsidianUri('2026-09-07', '午前は混雑\n#記号 & 記号');
+  assert.ok(uri.startsWith('obsidian://new?'));
+  assert.equal(uri.includes('overwrite'), false);
+  assert.equal(uri.includes('append'), false);
+
+  const query = new URLSearchParams(uri.slice(uri.indexOf('?') + 1));
+  assert.equal(query.get('name'), '2026-09-07 外来診療メモ');
+  assert.equal(query.get('paneType'), 'tab');
+  assert.equal(query.get('content'), [
+    '---',
+    'date: 2026-09-07',
+    'source: 外来予約カレンダー',
+    '---',
+    '',
+    '# 2026-09-07 外来診療メモ',
+    '',
+    '午前は混雑',
+    '#記号 & 記号',
+    '',
+  ].join('\n'));
+});
+
+test('Obsidian button exports the current draft without changing its local saved version', () => {
+  const app = makeApp({ storedMemos: '{"2026-09-07":"保存済み"}' });
+  app.openMemo('2026-09-07');
+  app.node('#memoText').value = 'Obsidianだけに送る編集中の内容';
+  app.node('#exportObsidian').dispatch('click');
+  assert.ok(app.window.location.href.startsWith('obsidian://new?'));
+  const query = new URLSearchParams(app.window.location.href.split('?')[1]);
+  assert.match(query.get('content'), /Obsidianだけに送る編集中の内容/);
+  assert.equal(app.storage.memoValue, '{"2026-09-07":"保存済み"}');
+  assert.equal(app.node('#memoDialog').open, true);
+});
+
+test('empty or invalid memo content does not launch Obsidian', () => {
+  const app = makeApp();
+  for (const [date, text] of [
+    ['2026-09-07', '   \n'],
+    ['2026-02-30', '本文'],
+  ]) {
+    app.window.location.href = '';
+    assert.equal(app.exportMemo(date, text), false);
+    assert.equal(app.window.location.href, '');
+  }
+  assert.match(app.node('#memoStatus').textContent, /入力/);
+});

@@ -129,7 +129,7 @@ function makeApp({ stored, storedMemos, readError = false, memoReadError = false
   }
 
   const alerts = [];
-  const window = makeEventTarget({ localStorage: storage });
+  const window = makeEventTarget({ localStorage: storage, location: { href: '' } });
   const context = vm.createContext({
     Date: FixedDate,
     console,
@@ -177,6 +177,8 @@ function makeApp({ stored, storedMemos, readError = false, memoReadError = false
       dateStr: date,
       jsEvent: { timeStamp },
     }),
+    obsidianUri: (date, text) => context.buildObsidianExportUri(date, text),
+    exportMemo: (date, text) => context.exportMemoToObsidian(date, text),
   };
 }
 

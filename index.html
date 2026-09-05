@@ -88,14 +88,16 @@
 
   <div id="calendar"></div>
 
-  <dialog id="memoDialog" aria-labelledby="memoDate" aria-describedby="memoHelp">
+  <dialog id="memoDialog" aria-labelledby="memoDate" aria-describedby="memoHelp memoExportHelp">
     <form id="memoForm">
       <h2 id="memoDate"></h2>
       <label for="memoText">外来診療メモ</label>
       <textarea id="memoText" rows="8" placeholder="その日の申し送りや気づいたことなど" autofocus></textarea>
       <p id="memoHelp">メモはこの端末・ブラウザー内に保存されます。空欄で保存すると、この日のメモを削除します。</p>
+      <p id="memoExportHelp">「Obsidianへ送る」は、現在入力中の内容から新しいMarkdownノートを作ります。Obsidianで最後に使用した保管庫が開きます。</p>
       <p id="memoStatus" role="alert"></p>
       <div class="memo-actions">
+        <button id="exportObsidian" type="button">Obsidianへ送る</button>
         <button id="cancelMemo" type="button">キャンセル</button>
         <button id="saveMemo" type="submit">保存</button>
       </div>
@@ -189,6 +191,36 @@
       document.getElementById("memoNotice").textContent =
         `${ymd} のメモを${text.trim() ? "保存" : "削除"}しました。`;
       refreshEvents();
+      return true;
+    }
+
+    function buildObsidianExportUri(ymd, text) {
+      if (!isValidClosureDate(ymd) || typeof text !== "string" || !text.trim()) return null;
+      const title = `${ymd} 外来診療メモ`;
+      const markdown = [
+        "---",
+        `date: ${ymd}`,
+        "source: 外来予約カレンダー",
+        "---",
+        "",
+        `# ${title}`,
+        "",
+        text,
+        ""
+      ].join("\n");
+      // overwrite/append を付けず、Obsidian側の既存ノートを変更しない。
+      return `obsidian://new?name=${encodeURIComponent(title)}&content=${encodeURIComponent(markdown)}&paneType=tab`;
+    }
+
+    function exportMemoToObsidian(ymd, text) {
+      const uri = buildObsidianExportUri(ymd, text);
+      if (!uri) {
+        document.getElementById("memoStatus").textContent =
+          "Obsidianへ送る内容を入力してください。";
+        return false;
+      }
+      document.getElementById("memoStatus").textContent = "Obsidianを開いています…";
+      window.location.href = uri;
       return true;
     }
 
@@ -480,6 +512,9 @@
 
     // ---- UI ----
     document.getElementById("openMemo").addEventListener("click", () => openMemo(closureDateInput.value));
+    document.getElementById("exportObsidian").addEventListener("click", () => {
+      exportMemoToObsidian(activeMemoDate, memoTextInput.value);
+    });
     document.getElementById("memoForm").addEventListener("submit", (event) => {
       event.preventDefault();
       if (saveMemo(activeMemoDate, memoTextInput.value, originalMemoText)) closeMemo();
