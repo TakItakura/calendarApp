@@ -3,14 +3,13 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>祝日 +4週/+8週 ハイライト</title>
+  <title>休日・休診日 +4週/+8週 ハイライト</title>
   <link rel="manifest" href="./manifest.webmanifest">
   <meta name="theme-color" content="#ffffff">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
 
   <!-- FullCalendar -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.css">
   <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.js"></script>
 
   <style>
@@ -21,106 +20,190 @@
     .note { max-width: 1100px; margin: 10px auto 0; color:#555; font-size: 13px; }
     .pill { display:inline-block; padding:2px 8px; border-radius:999px; margin-right:6px; font-size:12px; }
     .p-h { background:#ffebe9; border:1px solid #ffb4ad; }
+    .p-c { background:#fff1dc; border:1px solid #efb763; }
     .p-4 { background:#e8f0fe; border:1px solid #a8c7fa; }
     .p-8 { background:#e6f4ea; border:1px solid #a8dab5; }
+    .closure-panel { max-width:1100px; margin:0 auto 12px; padding:12px; box-sizing:border-box; border:1px solid #ddd; border-radius:8px; }
+    .closure-panel .bar { margin-bottom:6px; }
+    .closure-panel p { margin:6px 0 0; font-size:13px; color:#555; }
+    button, input[type="date"] { font:inherit; padding:6px 10px; }
+    button { cursor:pointer; }
+    button:disabled { cursor:default; }
+    #storageStatus, #holidayStatus { color:#a12b21; }
+    .fc .closure-selected { box-shadow:inset 0 0 0 2px #986621; }
+    @media (max-width:600px) {
+      body { margin:8px; }
+      .fc .fc-header-toolbar { flex-wrap:wrap; gap:8px; }
+      .fc .fc-toolbar-title { font-size:1.25em; }
+    }
   </style>
 </head>
 <body>
   <div class="bar">
     <label><input id="toggleHoliday" type="checkbox" checked>祝日を表示</label>
+    <label><input id="toggleClosure" type="checkbox" checked>休診日を表示</label>
     <label><input id="togglePlus4" type="checkbox" checked>4週間後（+28日）を表示</label>
     <label><input id="togglePlus8" type="checkbox" checked>8週間後（+56日）を表示</label>
     <button id="reload">再読み込み</button>
   </div>
 
+  <form id="closureForm" class="closure-panel">
+    <div class="bar">
+      <label for="closureDate">休診日にする日付
+        <input id="closureDate" type="date" min="0100-01-01" max="9998-12-31" required aria-describedby="closureHelp closureStatus">
+      </label>
+      <button id="setClosure" type="submit">休診に設定</button>
+      <button id="removeClosure" type="button" disabled>休診を解除</button>
+    </div>
+    <p id="closureHelp">日付を選んで「休診に設定」を押してください。カレンダーの日付や「休診」ラベルをクリックしても選択できます。</p>
+    <p>休診日と、その4週後・8週後を表示します。設定はこの端末・ブラウザー内に保存されます。別の端末とは共有されず、ブラウザーのデータを消去すると設定も消えます。</p>
+    <p id="closureStatus" role="status"></p>
+    <p id="storageStatus" role="alert"></p>
+  </form>
+
   <div class="note">
     <span class="pill p-h">祝日</span>
+    <span class="pill p-c">休診</span>
     <span class="pill p-4">+4週</span>
     <span class="pill p-8">+8週</span>
     <div style="margin-top:6px;">
       祝日データは Holidays JP API（JSON）から取得します。取得に失敗したら、ネット接続を確認してください。
     </div>
+    <div id="holidayStatus" role="status"></div>
   </div>
 
   <div id="calendar"></div>
 
   <script>
     // ---- 設定 ----
-    const HOLIDAY_API = "https://holidays-jp.github.io/api/v1/date.json"; // 祝日一覧（date -> name）  [oai_citation:2‡Holidays JP API](https://holidays-jp.github.io/?utm_source=chatgpt.com)
+    const HOLIDAY_API = "https://holidays-jp.github.io/api/v1/date.json";
+    const CLOSED_DATES_KEY = "holiday-plus-weeks-closed-dates-v1";
     const TZ = "Asia/Tokyo";
 
     // ---- 日付ユーティリティ ----
     const pad2 = (n) => String(n).padStart(2, "0");
-    const toYMD = (d) => `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
-
-    // 「YYYY-MM-DD」をローカル日付として扱う（FullCalendarはallDayなら日付扱いが安定）
+    const toYMD = (d) => `${String(d.getFullYear()).padStart(4, "0")}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
     const parseYMD = (ymd) => {
-      const [y,m,dd] = ymd.split("-").map(Number);
-      return new Date(y, m-1, dd);
+      const [y, m, dd] = ymd.split("-").map(Number);
+      return new Date(y, m - 1, dd);
     };
-
     const addDays = (date, days) => {
       const d = new Date(date.getTime());
       d.setDate(d.getDate() + days);
       return d;
     };
+    const isValidClosureDate = (ymd) => typeof ymd === "string"
+      && /^\d{4}-\d{2}-\d{2}$/.test(ymd)
+      && ymd >= "0100-01-01" && ymd <= "9998-12-31"
+      && toYMD(parseYMD(ymd)) === ymd;
+
+    let calendar;
+    let holidayMap = {};
+    let closureDates = new Set();
+    let storageAvailable = true;
+    const closureDateInput = document.getElementById("closureDate");
+
+    // ---- 休診日の保存 ----
+    function loadClosedDates() {
+      try {
+        const stored = localStorage.getItem(CLOSED_DATES_KEY);
+        const dates = stored === null ? [] : JSON.parse(stored);
+        if (!Array.isArray(dates) || !dates.every(isValidClosureDate)) {
+          throw new Error("Invalid closure dates");
+        }
+        storageAvailable = true;
+        document.getElementById("storageStatus").textContent = "";
+        return new Set(dates);
+      } catch (err) {
+        // 読めない既存データを空の設定で上書きしない。
+        storageAvailable = false;
+        document.getElementById("storageStatus").textContent =
+          "休診日の保存データを読み込めません。既存の設定を保護するため、設定・解除を停止しています。ブラウザーの保存設定を確認してください。";
+        return closureDates;
+      }
+    }
+
+    function saveClosure(ymd, isClosed) {
+      if (!storageAvailable || !isValidClosureDate(ymd)) return false;
+      const next = new Set(closureDates);
+      if (isClosed) next.add(ymd);
+      else next.delete(ymd);
+
+      try {
+        localStorage.setItem(CLOSED_DATES_KEY, JSON.stringify([...next].sort()));
+      } catch (err) {
+        document.getElementById("storageStatus").textContent =
+          "休診日を保存できませんでした。変更は反映していません。ブラウザーの保存設定や空き容量を確認してください。";
+        return false;
+      }
+      closureDates = next;
+      document.getElementById("storageStatus").textContent = "";
+      refreshEvents();
+      updateClosureControls();
+      document.getElementById("closureStatus").textContent =
+        `${ymd} の休診${isClosed ? "を設定しました。" : "を解除しました。祝日・年末年始の表示は残ります。"}`;
+      return true;
+    }
 
     // ---- 祝日取得 ----
     async function fetchHolidays() {
       const res = await fetch(HOLIDAY_API, { cache: "no-store" });
       if (!res.ok) throw new Error("祝日API取得失敗: " + res.status);
-      return await res.json(); // { "2017-01-01": "元日", ... }
+      return await res.json();
     }
 
     // ---- イベント生成 ----
-    function buildEvents(holidayMap, opts) {
+    function buildEvents(holidays, opts, closedDates = []) {
       const events = [];
-
-      const showHoliday = opts.showHoliday;
-      const showPlus4 = opts.showPlus4;
-      const showPlus8 = opts.showPlus8;
-
-      // 表示対象：今年〜来年を中心に（大量になりすぎないようにフィルタ）
+      const closureSet = new Set(closedDates);
+      const holidayDates = { ...holidays };
       const now = new Date();
       const from = new Date(now.getFullYear() - 1, 0, 1);
-      const to   = new Date(now.getFullYear() + 2, 11, 31);
+      const to = new Date(now.getFullYear() + 2, 11, 31);
 
-      // --- 年末年始（12/28〜1/3）を「休日」として毎年追加 ---
-      // 対象年：from〜to の範囲をカバーするために余裕を持って年を回す
-      const startYear = from.getFullYear();
-      const endYear = to.getFullYear();
-
-      for (let y = startYear; y <= endYear; y++) {
-        // 12/28〜12/31（y年）
+      // 年末年始（12/28〜1/3）はこれまでどおり毎年休日にする。
+      for (let y = from.getFullYear(); y <= to.getFullYear(); y++) {
         for (let d = 28; d <= 31; d++) {
           const ymd = `${y}-12-${pad2(d)}`;
-          // 既に祝日APIに同日がある場合は上書きしない（重複回避）
-          if (!holidayMap[ymd]) holidayMap[ymd] = "年末年始";
+          if (!holidayDates[ymd]) holidayDates[ymd] = "年末年始";
         }
-        // 1/1〜1/3（y年）
         for (let d = 1; d <= 3; d++) {
           const ymd = `${y}-01-${pad2(d)}`;
-          if (!holidayMap[ymd]) holidayMap[ymd] = "年末年始";
+          if (!holidayDates[ymd]) holidayDates[ymd] = "年末年始";
         }
       }
 
-      for (const [ymd, name] of Object.entries(holidayMap)) {
-        const d = parseYMD(ymd);
-        if (d < from || d > to) continue;
+      const baseDates = new Set(Object.keys(holidayDates).filter((ymd) => {
+        const date = parseYMD(ymd);
+        return date >= from && date <= to;
+      }));
+      // 手動設定した休診日は、上記の年の範囲にかかわらず表示する。
+      for (const ymd of closureSet) baseDates.add(ymd);
 
-        if (showHoliday) {
+      for (const ymd of [...baseDates].sort()) {
+        const date = parseYMD(ymd);
+        const holidayName = holidayDates[ymd];
+        const isClosed = closureSet.has(ymd);
+        const sourceName = isClosed
+          ? (holidayName ? `休診・${holidayName}` : "休診")
+          : holidayName;
+        const showClosure = isClosed && opts.showClosure;
+        const showHoliday = holidayName && opts.showHoliday;
+
+        if (showClosure || showHoliday) {
+          const kind = showClosure ? "closure" : "holiday";
           events.push({
-            title: name,
+            title: showClosure ? "休診" : holidayName,
             start: ymd,
             allDay: true,
             display: "background",
-            backgroundColor: "#ffebe9",
-            borderColor: "#ffb4ad",
-            extendedProps: { kind: "holiday", base: ymd }
+            backgroundColor: showClosure ? "#fff1dc" : "#ffebe9",
+            extendedProps: { kind, base: ymd }
           });
-          // 表示用の小さなラベル（クリックでわかるように通常イベントも追加）
+        }
+        if (showHoliday) {
           events.push({
-            title: "祝日: " + name,
+            title: "祝日: " + holidayName,
             start: ymd,
             allDay: true,
             backgroundColor: "#ffb4ad",
@@ -129,88 +212,144 @@
             extendedProps: { kind: "holiday_label", base: ymd }
           });
         }
-
-        const d4 = addDays(d, 28);
-        const d8 = addDays(d, 56);
-
-        if (showPlus4) {
-          const ymd4 = toYMD(d4);
+        if (showClosure) {
           events.push({
-            title: `+4週 (${name})`,
-            start: ymd4,
+            title: "休診",
+            start: ymd,
             allDay: true,
-            backgroundColor: "#a8c7fa",
-            borderColor: "#a8c7fa",
+            backgroundColor: "#efb763",
+            borderColor: "#efb763",
             textColor: "#000",
-            extendedProps: { kind: "plus4", base: ymd, holidayName: name }
+            extendedProps: { kind: "closure_label", base: ymd }
           });
         }
 
-        if (showPlus8) {
-          const ymd8 = toYMD(d8);
+        // 同じ日が祝日と休診日の両方でも、各週のイベントは1つにまとめる。
+        for (const [weeks, show, color] of [
+          [4, opts.showPlus4, "#a8c7fa"],
+          [8, opts.showPlus8, "#a8dab5"]
+        ]) {
+          if (!show) continue;
           events.push({
-            title: `+8週 (${name})`,
-            start: ymd8,
+            title: `+${weeks}週 (${sourceName})`,
+            start: toYMD(addDays(date, weeks * 7)),
             allDay: true,
-            backgroundColor: "#a8dab5",
-            borderColor: "#a8dab5",
+            backgroundColor: color,
+            borderColor: color,
             textColor: "#000",
-            extendedProps: { kind: "plus8", base: ymd, holidayName: name }
+            extendedProps: { kind: `plus${weeks}`, base: ymd, sourceName }
           });
         }
       }
-
       return events;
     }
 
-    // ---- カレンダー初期化 ----
-    let calendar;
-
-    async function render() {
-      const showHoliday = document.querySelector("#toggleHoliday").checked;
-      const showPlus4 = document.querySelector("#togglePlus4").checked;
-      const showPlus8 = document.querySelector("#togglePlus8").checked;
-
-      const holidayMap = await fetchHolidays();
-      const events = buildEvents(holidayMap, { showHoliday, showPlus4, showPlus8 });
-
-      const el = document.getElementById("calendar");
-      if (calendar) calendar.destroy();
-
-      calendar = new FullCalendar.Calendar(el, {
-        timeZone: TZ,
-        initialView: "dayGridMonth",
-        locale: "ja",
-        height: "auto",
-        firstDay: 1, // 月曜始まり
-        headerToolbar: {
-          left: "prev,next today",
-          center: "title",
-          right: "dayGridMonth,dayGridWeek,listMonth"
-        },
-        events,
-        eventClick: function(info) {
-          const p = info.event.extendedProps || {};
-          if (p.kind === "plus4" || p.kind === "plus8") {
-            alert(`${info.event.title}\n元の祝日: ${p.holidayName}\n祝日の日付: ${p.base}\nこの日付: ${info.event.startStr}`);
-          } else if (p.kind === "holiday_label") {
-            alert(`${info.event.title}\n日付: ${info.event.startStr}`);
-          }
-        }
+    // ---- 表示更新（表示中の月・週を保つ） ----
+    function refreshEvents() {
+      if (!calendar) return;
+      const events = buildEvents(holidayMap, {
+        showHoliday: document.getElementById("toggleHoliday").checked,
+        showClosure: document.getElementById("toggleClosure").checked,
+        showPlus4: document.getElementById("togglePlus4").checked,
+        showPlus8: document.getElementById("togglePlus8").checked
+      }, closureDates);
+      calendar.batchRendering(() => {
+        calendar.getEventSources().forEach((source) => source.remove());
+        calendar.addEventSource(events);
       });
-
-      calendar.render();
     }
 
-    // ---- UI ----
-    document.querySelector("#reload").addEventListener("click", () => {
-      render().catch(err => alert(err.message));
-    });
-    document.querySelector("#toggleHoliday").addEventListener("change", () => render().catch(err => alert(err.message)));
-    document.querySelector("#togglePlus4").addEventListener("change", () => render().catch(err => alert(err.message)));
-    document.querySelector("#togglePlus8").addEventListener("change", () => render().catch(err => alert(err.message)));
+    function updateClosureControls() {
+      const ymd = closureDateInput.value;
+      const valid = isValidClosureDate(ymd);
+      const isClosed = closureDates.has(ymd);
+      document.getElementById("setClosure").disabled = !storageAvailable || !valid || isClosed;
+      document.getElementById("removeClosure").disabled = !storageAvailable || !valid || !isClosed;
+      document.getElementById("closureStatus").textContent = valid
+        ? `${ymd}: ${isClosed ? "休診に設定されています。" : "手動の休診設定はありません。"}`
+        : "有効な日付を選んでください。";
+    }
 
-    render().catch(err => alert(err.message));
+    function selectClosureDate(ymd) {
+      closureDateInput.value = ymd;
+      updateClosureControls();
+      if (calendar && isValidClosureDate(ymd)) {
+        calendar.gotoDate(ymd);
+        // FullCalendar の名前付きタイムゾーン（プラグインなし）は UTC の日付を使う。
+        calendar.setOption("dayCellClassNames", (info) =>
+          info.date.toISOString().slice(0, 10) === ymd ? ["closure-selected"] : []);
+      }
+    }
+
+    async function reloadHolidays() {
+      const button = document.getElementById("reload");
+      button.disabled = true;
+      document.getElementById("holidayStatus").textContent = "祝日データを読み込み中…";
+      try {
+        holidayMap = await fetchHolidays();
+        document.getElementById("holidayStatus").textContent = "";
+        refreshEvents();
+      } catch (err) {
+        document.getElementById("holidayStatus").textContent =
+          "祝日データを取得できませんでした。ネット接続を確認して再読み込みしてください。休診日の設定・表示は引き続き利用できます。";
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    // ---- カレンダー初期化 ----
+    closureDates = loadClosedDates();
+    closureDateInput.value = toYMD(new Date());
+    calendar = new FullCalendar.Calendar(document.getElementById("calendar"), {
+      timeZone: TZ,
+      initialView: "dayGridMonth",
+      locale: "ja",
+      height: "auto",
+      firstDay: 1,
+      headerToolbar: {
+        left: "prev,next today",
+        center: "title",
+        right: "dayGridMonth,dayGridWeek,listMonth"
+      },
+      dateClick: (info) => selectClosureDate(info.dateStr),
+      eventClick: (info) => {
+        const p = info.event.extendedProps || {};
+        if (p.kind === "closure_label") {
+          selectClosureDate(p.base);
+          document.getElementById("removeClosure").focus();
+        } else if (p.kind === "plus4" || p.kind === "plus8") {
+          alert(`${info.event.title}\n元の休日・休診日: ${p.sourceName}\n元の日付: ${p.base}\nこの日付: ${info.event.startStr}`);
+        } else if (p.kind === "holiday_label") {
+          selectClosureDate(p.base);
+          alert(`${info.event.title}\n日付: ${info.event.startStr}`);
+        }
+      }
+    });
+    calendar.render();
+    refreshEvents();
+    selectClosureDate(closureDateInput.value);
+
+    // ---- UI ----
+    document.getElementById("closureForm").addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (saveClosure(closureDateInput.value, true)) calendar.gotoDate(closureDateInput.value);
+    });
+    document.getElementById("removeClosure").addEventListener("click", () => {
+      saveClosure(closureDateInput.value, false);
+    });
+    closureDateInput.addEventListener("change", () => selectClosureDate(closureDateInput.value));
+    document.getElementById("reload").addEventListener("click", reloadHolidays);
+    for (const id of ["toggleHoliday", "toggleClosure", "togglePlus4", "togglePlus8"]) {
+      document.getElementById(id).addEventListener("change", refreshEvents);
+    }
+    // 同じブラウザーの別タブで変更した場合も追従する。
+    window.addEventListener("storage", (event) => {
+      if (event.key !== CLOSED_DATES_KEY && event.key !== null) return;
+      closureDates = loadClosedDates();
+      refreshEvents();
+      updateClosureControls();
+    });
+    reloadHolidays();
   </script>
   <script>
   if ("serviceWorker" in navigator) {

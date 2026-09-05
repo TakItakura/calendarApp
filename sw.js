@@ -1,13 +1,10 @@
-const CACHE_NAME = "holiday-plus-weeks-v1";
+const CACHE_NAME = "holiday-plus-weeks-v2";
 
 // ここに “アプリ本体” を入れる（外部CDNは固定バージョンなので入れてOK）
 const APP_ASSETS = [
   "./",
   "./index.html",
   "./manifest.webmanifest",
-  "./icon-192.png",
-  "./icon-512.png",
-  "https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.css",
   "https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.js"
 ];
 
