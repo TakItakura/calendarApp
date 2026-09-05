@@ -16,21 +16,30 @@
     body { font-family: system-ui, -apple-system, "Hiragino Kaku Gothic ProN", Meiryo, sans-serif; margin: 16px; }
     .bar { display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }
     .bar label { display:flex; gap:6px; align-items:center; }
-    #calendar { max-width: 1100px; margin: 0 auto; }
+    #calendar { max-width: 1100px; margin: 0 auto; touch-action:manipulation; }
     .note { max-width: 1100px; margin: 10px auto 0; color:#555; font-size: 13px; }
     .pill { display:inline-block; padding:2px 8px; border-radius:999px; margin-right:6px; font-size:12px; }
     .p-h { background:#ffebe9; border:1px solid #ffb4ad; }
     .p-c { background:#fff1dc; border:1px solid #efb763; }
     .p-4 { background:#e8f0fe; border:1px solid #a8c7fa; }
     .p-8 { background:#e6f4ea; border:1px solid #a8dab5; }
+    .p-m { background:#f0e7ff; border:1px solid #c6a8e8; }
     .closure-panel { max-width:1100px; margin:0 auto 12px; padding:12px; box-sizing:border-box; border:1px solid #ddd; border-radius:8px; }
     .closure-panel .bar { margin-bottom:6px; }
     .closure-panel p { margin:6px 0 0; font-size:13px; color:#555; }
     button, input[type="date"] { font:inherit; padding:6px 10px; }
     button { cursor:pointer; }
     button:disabled { cursor:default; }
-    #storageStatus, #holidayStatus { color:#a12b21; }
+    #storageStatus, #holidayStatus, #memoStatus, #memoStorageStatus { color:#a12b21; }
     .fc .closure-selected { box-shadow:inset 0 0 0 2px #986621; }
+    #memoDialog { width:min(560px, calc(100% - 32px)); max-height:calc(100dvh - 32px); padding:20px; box-sizing:border-box; border:1px solid #ddd; border-radius:12px; overflow:auto; }
+    #memoDialog::backdrop { background:rgb(0 0 0 / 35%); }
+    #memoDialog h2 { margin:0 0 16px; font-size:1.25em; }
+    #memoDialog label { display:block; margin-bottom:6px; }
+    #memoText { width:100%; min-height:180px; box-sizing:border-box; padding:10px; font:inherit; font-size:16px; line-height:1.6; resize:vertical; }
+    #memoDialog p { font-size:13px; color:#555; }
+    #memoDialog #memoStatus { color:#a12b21; }
+    .memo-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:16px; }
     @media (max-width:600px) {
       body { margin:8px; }
       .fc .fc-header-toolbar { flex-wrap:wrap; gap:8px; }
@@ -54,6 +63,7 @@
       </label>
       <button id="setClosure" type="submit">休診に設定</button>
       <button id="removeClosure" type="button" disabled>休診を解除</button>
+      <button id="openMemo" type="button">この日のメモ</button>
     </div>
     <p id="closureHelp">日付を選んで「休診に設定」を押してください。カレンダーの日付や「休診」ラベルをクリックしても選択できます。</p>
     <p>休診日と、その4週後・8週後を表示します。設定はこの端末・ブラウザー内に保存されます。別の端末とは共有されず、ブラウザーのデータを消去すると設定も消えます。</p>
@@ -66,6 +76,10 @@
     <span class="pill p-c">休診</span>
     <span class="pill p-4">+4週</span>
     <span class="pill p-8">+8週</span>
+    <span class="pill p-m">メモあり</span>
+    <p>日付の数字や余白をダブルタップ（PCではダブルクリック）すると、その日のメモを開きます。「メモあり」や「この日のメモ」からも開けます。</p>
+    <div id="memoStorageStatus" role="alert"></div>
+    <div id="memoNotice" role="status"></div>
     <div style="margin-top:6px;">
       祝日データは Holidays JP API（JSON）から取得します。取得に失敗したら、ネット接続を確認してください。
     </div>
@@ -74,10 +88,25 @@
 
   <div id="calendar"></div>
 
+  <dialog id="memoDialog" aria-labelledby="memoDate" aria-describedby="memoHelp">
+    <form id="memoForm">
+      <h2 id="memoDate"></h2>
+      <label for="memoText">外来診療メモ</label>
+      <textarea id="memoText" rows="8" placeholder="その日の申し送りや気づいたことなど" autofocus></textarea>
+      <p id="memoHelp">メモはこの端末・ブラウザー内に保存されます。空欄で保存すると、この日のメモを削除します。</p>
+      <p id="memoStatus" role="alert"></p>
+      <div class="memo-actions">
+        <button id="cancelMemo" type="button">キャンセル</button>
+        <button id="saveMemo" type="submit">保存</button>
+      </div>
+    </form>
+  </dialog>
+
   <script>
     // ---- 設定 ----
     const HOLIDAY_API = "https://holidays-jp.github.io/api/v1/date.json";
     const CLOSED_DATES_KEY = "holiday-plus-weeks-closed-dates-v1";
+    const MEMOS_KEY = "holiday-plus-weeks-memos-v1";
     const TZ = "Asia/Tokyo";
 
     // ---- 日付ユーティリティ ----
@@ -101,7 +130,117 @@
     let holidayMap = {};
     let closureDates = new Set();
     let storageAvailable = true;
+    let memos = {};
+    let memoStorageAvailable = true;
+    let activeMemoDate = null;
+    let originalMemoText = "";
+    let lastDateTap = null;
+    let selectedDayEl = null;
     const closureDateInput = document.getElementById("closureDate");
+    const memoDialog = document.getElementById("memoDialog");
+    const memoTextInput = document.getElementById("memoText");
+
+    // ---- 日付ごとのメモ ----
+    function readMemos() {
+      const stored = localStorage.getItem(MEMOS_KEY);
+      const data = stored === null ? {} : JSON.parse(stored);
+      if (!data || typeof data !== "object" || Array.isArray(data)
+        || !Object.entries(data).every(([ymd, text]) => isValidClosureDate(ymd) && typeof text === "string")) {
+        throw new Error("Invalid memo data");
+      }
+      return data;
+    }
+
+    function loadMemos() {
+      try {
+        const data = readMemos();
+        memoStorageAvailable = true;
+        document.getElementById("memoStorageStatus").textContent = "";
+        return data;
+      } catch (err) {
+        memoStorageAvailable = false;
+        document.getElementById("memoStorageStatus").textContent =
+          "保存したメモを読み込めません。既存のメモを保護するため保存を停止しています。ブラウザーの保存設定を確認してください。";
+        return memos;
+      }
+    }
+
+    function saveMemo(ymd, text, expectedText) {
+      if (!memoStorageAvailable || !isValidClosureDate(ymd) || typeof text !== "string") return false;
+      try {
+        // 別タブで変更された他の日のメモを消さないよう、保存直前に読み直す。
+        const next = readMemos();
+        if (expectedText !== undefined && (next[ymd] || "") !== expectedText) {
+          document.getElementById("memoStatus").textContent =
+            "この日のメモは別の画面で変更されています。入力内容を控えてから、メモを開き直してください。入力内容はまだ保存していません。";
+          return false;
+        }
+        if (text.trim()) next[ymd] = text;
+        else delete next[ymd];
+        localStorage.setItem(MEMOS_KEY, JSON.stringify(next));
+        memos = next;
+      } catch (err) {
+        document.getElementById("memoStatus").textContent =
+          "メモを保存できませんでした。入力内容はこの画面に残っています。ブラウザーの保存設定や空き容量を確認して、もう一度保存してください。";
+        return false;
+      }
+      document.getElementById("memoStatus").textContent = "";
+      document.getElementById("memoStorageStatus").textContent = "";
+      document.getElementById("memoNotice").textContent =
+        `${ymd} のメモを${text.trim() ? "保存" : "削除"}しました。`;
+      refreshEvents();
+      return true;
+    }
+
+    function openMemo(ymd) {
+      if (!isValidClosureDate(ymd) || memoDialog.open) return;
+      lastDateTap = null;
+      memos = loadMemos();
+      activeMemoDate = ymd;
+      originalMemoText = memos[ymd] || "";
+      document.getElementById("memoDate").textContent = `${ymd} のメモ`;
+      memoTextInput.value = originalMemoText;
+      document.getElementById("saveMemo").disabled = !memoStorageAvailable;
+      document.getElementById("memoStatus").textContent = memoStorageAvailable ? ""
+        : "メモを読み込めないため保存を停止しています。ブラウザーの保存設定を確認してください。";
+      memoDialog.showModal();
+      memoTextInput.focus();
+    }
+
+    function closeMemo() {
+      memoDialog.close();
+      activeMemoDate = null;
+      lastDateTap = null;
+    }
+
+    function handleDateClick(info) {
+      const ymd = info.dateStr;
+      const time = info.jsEvent?.timeStamp ?? Date.now();
+      if (lastDateTap && lastDateTap.date === ymd
+        && time - lastDateTap.time >= 0 && time - lastDateTap.time <= 450) {
+        openMemo(ymd);
+        return;
+      }
+      lastDateTap = { date: ymd, time };
+      // 2回目のタップ前に FullCalendar を再描画しない。
+      closureDateInput.value = ymd;
+      updateClosureControls();
+      if (selectedDayEl) selectedDayEl.classList.remove("closure-selected");
+      selectedDayEl = info.dayEl || null;
+      if (selectedDayEl) selectedDayEl.classList.add("closure-selected");
+    }
+
+    function buildMemoEvents(notes) {
+      return Object.entries(notes).filter(([, text]) => text.trim()).map(([ymd]) => ({
+        title: "メモあり",
+        start: ymd,
+        allDay: true,
+        backgroundColor: "#f0e7ff",
+        borderColor: "#c6a8e8",
+        textColor: "#000",
+        extendedProps: { kind: "memo", base: ymd }
+      }));
+    }
 
     // ---- 休診日の保存 ----
     function loadClosedDates() {
@@ -253,6 +392,7 @@
         showPlus4: document.getElementById("togglePlus4").checked,
         showPlus8: document.getElementById("togglePlus8").checked
       }, closureDates);
+      events.push(...buildMemoEvents(memos));
       calendar.batchRendering(() => {
         calendar.getEventSources().forEach((source) => source.remove());
         calendar.addEventSource(events);
@@ -263,6 +403,7 @@
       const ymd = closureDateInput.value;
       const valid = isValidClosureDate(ymd);
       const isClosed = closureDates.has(ymd);
+      document.getElementById("openMemo").disabled = !valid;
       document.getElementById("setClosure").disabled = !storageAvailable || !valid || isClosed;
       document.getElementById("removeClosure").disabled = !storageAvailable || !valid || !isClosed;
       document.getElementById("closureStatus").textContent = valid
@@ -270,11 +411,11 @@
         : "有効な日付を選んでください。";
     }
 
-    function selectClosureDate(ymd) {
+    function selectClosureDate(ymd, { navigate = true } = {}) {
       closureDateInput.value = ymd;
       updateClosureControls();
       if (calendar && isValidClosureDate(ymd)) {
-        calendar.gotoDate(ymd);
+        if (navigate) calendar.gotoDate(ymd);
         // FullCalendar の名前付きタイムゾーン（プラグインなし）は UTC の日付を使う。
         calendar.setOption("dayCellClassNames", (info) =>
           info.date.toISOString().slice(0, 10) === ymd ? ["closure-selected"] : []);
@@ -299,6 +440,7 @@
 
     // ---- カレンダー初期化 ----
     closureDates = loadClosedDates();
+    memos = loadMemos();
     closureDateInput.value = toYMD(new Date());
     calendar = new FullCalendar.Calendar(document.getElementById("calendar"), {
       timeZone: TZ,
@@ -311,10 +453,17 @@
         center: "title",
         right: "dayGridMonth,dayGridWeek,listMonth"
       },
-      dateClick: (info) => selectClosureDate(info.dateStr),
+      dateClick: handleDateClick,
+      datesSet: () => {
+        lastDateTap = null;
+        selectedDayEl = null;
+      },
       eventClick: (info) => {
+        lastDateTap = null;
         const p = info.event.extendedProps || {};
-        if (p.kind === "closure_label") {
+        if (p.kind === "memo") {
+          openMemo(p.base);
+        } else if (p.kind === "closure_label") {
           selectClosureDate(p.base);
           document.getElementById("removeClosure").focus();
         } else if (p.kind === "plus4" || p.kind === "plus8") {
@@ -330,6 +479,21 @@
     selectClosureDate(closureDateInput.value);
 
     // ---- UI ----
+    document.getElementById("openMemo").addEventListener("click", () => openMemo(closureDateInput.value));
+    document.getElementById("memoForm").addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (saveMemo(activeMemoDate, memoTextInput.value, originalMemoText)) closeMemo();
+    });
+    document.getElementById("cancelMemo").addEventListener("click", closeMemo);
+    memoDialog.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      if (memoTextInput.value !== originalMemoText) {
+        document.getElementById("memoStatus").textContent =
+          "未保存の入力があります。「保存」するか、「キャンセル」で入力を破棄してください。";
+      } else {
+        closeMemo();
+      }
+    });
     document.getElementById("closureForm").addEventListener("submit", (event) => {
       event.preventDefault();
       if (saveClosure(closureDateInput.value, true)) calendar.gotoDate(closureDateInput.value);
@@ -344,10 +508,20 @@
     }
     // 同じブラウザーの別タブで変更した場合も追従する。
     window.addEventListener("storage", (event) => {
-      if (event.key !== CLOSED_DATES_KEY && event.key !== null) return;
-      closureDates = loadClosedDates();
-      refreshEvents();
-      updateClosureControls();
+      if (event.key === CLOSED_DATES_KEY || event.key === null) {
+        closureDates = loadClosedDates();
+        updateClosureControls();
+      }
+      if (event.key === MEMOS_KEY || event.key === null) {
+        memos = loadMemos();
+        document.getElementById("saveMemo").disabled = !memoStorageAvailable;
+        // 編集中の本文は書き換えず、保存時に同日の変更を確認する。
+        if (memoDialog.open && !memoStorageAvailable) {
+          document.getElementById("memoStatus").textContent =
+            "保存データを読み込めなくなりました。入力内容はこの画面に残っています。";
+        }
+      }
+      if ([CLOSED_DATES_KEY, MEMOS_KEY, null].includes(event.key)) refreshEvents();
     });
     reloadHolidays();
   </script>

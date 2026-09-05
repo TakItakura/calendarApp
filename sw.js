@@ -1,4 +1,4 @@
-const CACHE_NAME = "holiday-plus-weeks-v2";
+const CACHE_NAME = "holiday-plus-weeks-v3";
 
 // ここに “アプリ本体” を入れる（外部CDNは固定バージョンなので入れてOK）
 const APP_ASSETS = [
